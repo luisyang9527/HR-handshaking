@@ -27,6 +27,8 @@ from festo_phand_msgs.msg import *
 
 import logging
 
+from controller import*
+
 class HandPressureSlider(QSlider):
 	valueUpdated = pyqtSignal(float)
 	def __init__(self, joint_name, max_pressure):
@@ -129,6 +131,8 @@ class HandControllerGui(QWidget):
 					break
 				
 				pressure_array[x,y] = msg.raw_values[index]	
+				if pressure_array[x,y] > 1000:
+					pressure_array[x, y] = 0
 		#define the offset
 		# self.loomia_offset = 0
 		if not self.calibrated: # Using the first 20 values when no interaction is happenning as the offset
@@ -140,18 +144,42 @@ class HandControllerGui(QWidget):
 				self.loomia_offset = self.zero_grip.mean(0)
 				self.calibrated = True
 		self.pressure_array = pressure_array - self.loomia_offset
-		grip_pressure = self.pressure_array[0:9, 6:].sum()/(self.pressure_array[0:9, 6:].shape[0]*self.pressure_array[0:9, 6:].shape[1]) # Obtained using trial and error. Need to update with loomia layout diagram from Timo
+		# loomia mapping
+		grip_pressure = self.pressure_array[6:9, 6:].sum()/(self.pressure_array[6:9, 6:].shape[0]*self.pressure_array[6:9, 6:].shape[1]) 
+		# trial
+		# grip_pressure = self.pressure_array[6:11, 6:].sum()/(self.pressure_array[6:11, 6:].shape[0]*self.pressure_array[6:11, 6:].shape[1]) 
 		self.grip_pressure_topic.publish(Float32(grip_pressure))
 
 		#TODO: calculate and publish FR
-		robot_pressure = self.pressure_array[0:9, 6:].sum()/(self.pressure_array[0:9, 6:].shape[0]*self.pressure_array[0:9, 6:].shape[1]) # Obtained using trial and error. Need to update with loomia layout diagram from Timo
-		self.robot_pressure_topic.publish(Float32(robot_pressure))
+		# loomia mapping
+		robot_pressure = (self.pressure_array[0:9, 0:6].sum() + self.pressure_array[9:, 6:].sum())/(self.pressure_array[0:9, 0:6].shape[0]*self.pressure_array[0:9, 0:6].shape[1] + self.pressure_array[9:, 6:].shape[0]*self.pressure_array[9:, 6:].shape[1])
+		# trial
+		# robot_pressure = (self.pressure_array[0:9, 0:6].sum() + self.pressure_array[9:, 6:].sum() + self.pressure_array[0, 6:].sum())/(self.pressure_array[0:9, 0:6].shape[0]*self.pressure_array[0:9, 0:6].shape[1] + self.pressure_array[9:, 6:].shape[0]*self.pressure_array[9:, 6:].shape[1] + 5)
+		# using pid controll 
+		pid_controller = PID(1.029, 0.00, 0.00000000)
+		pid_controller.reset()
+		pid_controller.set_sample_time(0.01)
+		self.actual = robot_pressure
+		print("self.actual = {}".format(self.actual))
+		# self.desired = 100 # reference force, you can set it by yourself
+		self.desired = grip_pressure
+		print("self.desired = {}".format(self.desired))
+		# actual_force = pid_controller.update(self.actual, self.desired) + self.actual
+		# print("actual_force = {}".format(actual_force))
+		# self.robot_pressure_topic.publish(Float32(actual_force))
+
+		for i in range(2):
+			self.actual = pid_controller.update(self.actual, self.desired) + self.actual
+			time.sleep(0.01)
+		print("actual_force = {}".format(self.actual))
+		self.robot_pressure_topic.publish(Float32(self.actual))
 
 		# Max and Min values observed using rqt_plot
 		min_grip = 0.
 		max_grip = 200.
-		grip_pressure = (np.clip(grip_pressure, min_grip, max_grip) - min_grip)/(max_grip - min_grip)
-		self.sliders[0].setValue(100 * grip_pressure)
+		# grip_pressure = (np.clip(grip_pressure, min_grip, max_grip) - min_grip)/(max_grip - min_grip)
+		set_grip_pressure = (np.clip(self.actual, min_grip, max_grip) - min_grip)/(max_grip - min_grip)
+		self.sliders[0].setValue(100 * set_grip_pressure)
 		# print("grip_pressure = {}".format(grip_pressure))
 
 	def hand_state_cb(self, msg):
@@ -208,7 +236,7 @@ class HandControllerGui(QWidget):
 
 
 if __name__ == '__main__':
-	rospy.init_node('basic_interactive_handshake_node')
+	rospy.init_node('FH_node')
 	signal.signal(signal.SIGINT, signal.SIG_DFL)
 	app = QApplication(sys.argv)
 	ui = HandControllerGui()
